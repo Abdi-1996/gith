@@ -93,15 +93,12 @@ jobs:
 
           echo "$JSON"
 
-          SCHEME="$(printf '%s' "$JSON" | python3 -c '
-import json, sys
-data=json.load(sys.stdin)
-root=data.get("workspace") or data.get("project") or {}
-schemes=root.get("schemes", [])
-if not schemes:
-    raise SystemExit("No shared scheme found")
-print(schemes[0])
-')"
+          SCHEME="$(printf '%s' "$JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("workspace") or d.get("project") or {}; s=r.get("schemes",[]); print(s[0] if s else "")')"
+
+          if [ -z "$SCHEME" ]; then
+            echo "ERROR: No shared scheme found"
+            exit 1
+          fi
 
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
           echo "Using scheme: $SCHEME"
@@ -112,15 +109,9 @@ print(schemes[0])
           set -euo pipefail
 
           if [ "$PROJECT_TYPE" = "workspace" ]; then
-            xcodebuild \
-              -resolvePackageDependencies \
-              -workspace "$PROJECT_PATH" \
-              -scheme "$SCHEME"
+            xcodebuild               -resolvePackageDependencies               -workspace "$PROJECT_PATH"               -scheme "$SCHEME"
           else
-            xcodebuild \
-              -resolvePackageDependencies \
-              -project "$PROJECT_PATH" \
-              -scheme "$SCHEME"
+            xcodebuild               -resolvePackageDependencies               -project "$PROJECT_PATH"               -scheme "$SCHEME"
           fi
 
       - name: Build unsigned app
@@ -129,28 +120,10 @@ print(schemes[0])
           set -euo pipefail
           set -o pipefail
 
-          COMMON_ARGS=(
-            -scheme "$SCHEME"
-            -configuration Release
-            -sdk iphoneos
-            -destination "generic/platform=iOS"
-            -derivedDataPath "$RUNNER_TEMP/DerivedData"
-            CODE_SIGNING_ALLOWED=NO
-            CODE_SIGNING_REQUIRED=NO
-            CODE_SIGN_IDENTITY=""
-            DEVELOPMENT_TEAM=""
-          )
-
           if [ "$PROJECT_TYPE" = "workspace" ]; then
-            xcodebuild \
-              -workspace "$PROJECT_PATH" \
-              "${COMMON_ARGS[@]}" \
-              clean build
+            xcodebuild               -workspace "$PROJECT_PATH"               -scheme "$SCHEME"               -configuration Release               -sdk iphoneos               -destination "generic/platform=iOS"               -derivedDataPath "$RUNNER_TEMP/DerivedData"               CODE_SIGNING_ALLOWED=NO               CODE_SIGNING_REQUIRED=NO               CODE_SIGN_IDENTITY=""               DEVELOPMENT_TEAM=""               clean build
           else
-            xcodebuild \
-              -project "$PROJECT_PATH" \
-              "${COMMON_ARGS[@]}" \
-              clean build
+            xcodebuild               -project "$PROJECT_PATH"               -scheme "$SCHEME"               -configuration Release               -sdk iphoneos               -destination "generic/platform=iOS"               -derivedDataPath "$RUNNER_TEMP/DerivedData"               CODE_SIGNING_ALLOWED=NO               CODE_SIGNING_REQUIRED=NO               CODE_SIGN_IDENTITY=""               DEVELOPMENT_TEAM=""               clean build
           fi
 
       - name: Create IPA
@@ -158,8 +131,7 @@ print(schemes[0])
         run: |
           set -euo pipefail
 
-          APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" \
-            -maxdepth 1 -type d -name '*.app' -print -quit)"
+          APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -type d -name '*.app' -print -quit)"
 
           if [ -z "$APP_PATH" ]; then
             echo "ERROR: built .app not found"
