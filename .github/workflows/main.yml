@@ -1,121 +1,106 @@
-name: Build IPAAction v2.6 Fixed
+name: Build iOS IPA
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - ipaaction
-    paths:
-      - "IPAAction.zip"
-      - "project.yml"
-      - "*.swift"
-      - "**/*.swift"
-      - ".github/workflows/build-ipaaction-v2.6-fixed.yml"
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build IPAAction v2.6
+    name: Build IPA
     runs-on: macos-15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare source
+      - name: Detect project
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Repository root:"
-          ls -la
+          echo "Repository files:"
+          find "$GITHUB_WORKSPACE" -maxdepth 3 -type f | sort | head -300
 
-          if [ -s IPAAction.zip ]; then
-            echo "Using IPAAction.zip"
+          PROJECT_YML="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -name project.yml -print -quit || true)"
+          WORKSPACE="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type d -name '*.xcworkspace' -print -quit || true)"
+          XCODEPROJ="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type d -name '*.xcodeproj' -print -quit || true)"
 
-            unzip -t IPAAction.zip >/dev/null
+          if [ -n "$PROJECT_YML" ]; then
+            echo "PROJECT_TYPE=xcodegen" >> "$GITHUB_ENV"
+            echo "PROJECT_DIR=$(dirname "$PROJECT_YML")" >> "$GITHUB_ENV"
+            echo "Found project.yml: $PROJECT_YML"
 
-            SRC="$RUNNER_TEMP/IPAActionSource"
-            rm -rf "$SRC"
-            mkdir -p "$SRC"
-            unzip -q IPAAction.zip -d "$SRC"
+          elif [ -n "$WORKSPACE" ]; then
+            echo "PROJECT_TYPE=workspace" >> "$GITHUB_ENV"
+            echo "PROJECT_PATH=$WORKSPACE" >> "$GITHUB_ENV"
+            echo "PROJECT_DIR=$(dirname "$WORKSPACE")" >> "$GITHUB_ENV"
+            echo "Found workspace: $WORKSPACE"
 
-            PROJECT_YML="$(find "$SRC" -type f -name project.yml -print -quit)"
-
-            if [ -z "$PROJECT_YML" ]; then
-              echo "ERROR: project.yml not found inside IPAAction.zip"
-              exit 1
-            fi
-
-            PROJECT_DIR="$(dirname "$PROJECT_YML")"
-
-          elif [ -f project.yml ]; then
-            echo "IPAAction.zip not found — using repository source directly"
-            PROJECT_DIR="$GITHUB_WORKSPACE"
+          elif [ -n "$XCODEPROJ" ]; then
+            echo "PROJECT_TYPE=project" >> "$GITHUB_ENV"
+            echo "PROJECT_PATH=$XCODEPROJ" >> "$GITHUB_ENV"
+            echo "PROJECT_DIR=$(dirname "$XCODEPROJ")" >> "$GITHUB_ENV"
+            echo "Found project: $XCODEPROJ"
 
           else
-            PROJECT_YML="$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -name project.yml -print -quit)"
-
-            if [ -z "$PROJECT_YML" ]; then
-              echo "ERROR: Neither IPAAction.zip nor project.yml was found"
-              exit 1
-            fi
-
-            PROJECT_DIR="$(dirname "$PROJECT_YML")"
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
-
-          find "$PROJECT_DIR" -maxdepth 3 -type f | sort | head -300
-
-      - name: Install XcodeGen
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if command -v xcodegen >/dev/null 2>&1; then
-            xcodegen --version
-          else
-            brew install xcodegen
-          fi
-
-      - name: Generate Xcode project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-          xcodegen generate
-
-          PROJECT="$(find "$PROJECT_DIR" -maxdepth 1 -type d -name '*.xcodeproj' -print -quit)"
-
-          if [ -z "$PROJECT" ]; then
-            echo "ERROR: xcodegen did not generate an .xcodeproj"
+            echo "ERROR: No project.yml, .xcworkspace, or .xcodeproj found"
             exit 1
           fi
 
-          echo "PROJECT_PATH=$PROJECT" >> "$GITHUB_ENV"
-          echo "Generated project: $PROJECT"
+      - name: Install XcodeGen
+        if: env.PROJECT_TYPE == 'xcodegen'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        if: env.PROJECT_TYPE == 'xcodegen'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          xcodegen generate
+
+          GENERATED="$(find "$PROJECT_DIR" -maxdepth 1 -type d -name '*.xcodeproj' -print -quit)"
+          if [ -z "$GENERATED" ]; then
+            echo "ERROR: xcodegen did not generate .xcodeproj"
+            exit 1
+          fi
+
+          echo "PROJECT_TYPE=project" >> "$GITHUB_ENV"
+          echo "PROJECT_PATH=$GENERATED" >> "$GITHUB_ENV"
+          echo "Generated project: $GENERATED"
 
       - name: Detect scheme
         shell: bash
         run: |
           set -euo pipefail
 
-          JSON="$(xcodebuild -list -json -project "$PROJECT_PATH")"
+          if [ "$PROJECT_TYPE" = "workspace" ]; then
+            JSON="$(xcodebuild -list -json -workspace "$PROJECT_PATH")"
+          else
+            JSON="$(xcodebuild -list -json -project "$PROJECT_PATH")"
+          fi
+
           echo "$JSON"
 
           SCHEME="$(printf '%s' "$JSON" | python3 -c '
 import json, sys
-data = json.load(sys.stdin)
-project = data.get("project", {})
-schemes = project.get("schemes", [])
+data=json.load(sys.stdin)
+root=data.get("workspace") or data.get("project") or {}
+schemes=root.get("schemes", [])
 if not schemes:
-    raise SystemExit("No scheme found")
-print("IPAAction" if "IPAAction" in schemes else schemes[0])
+    raise SystemExit("No shared scheme found")
+print(schemes[0])
 ')"
 
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
@@ -126,10 +111,17 @@ print("IPAAction" if "IPAAction" in schemes else schemes[0])
         run: |
           set -euo pipefail
 
-          xcodebuild \
-            -resolvePackageDependencies \
-            -project "$PROJECT_PATH" \
-            -scheme "$SCHEME"
+          if [ "$PROJECT_TYPE" = "workspace" ]; then
+            xcodebuild \
+              -resolvePackageDependencies \
+              -workspace "$PROJECT_PATH" \
+              -scheme "$SCHEME"
+          else
+            xcodebuild \
+              -resolvePackageDependencies \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME"
+          fi
 
       - name: Build unsigned app
         shell: bash
@@ -137,36 +129,41 @@ print("IPAAction" if "IPAAction" in schemes else schemes[0])
           set -euo pipefail
           set -o pipefail
 
-          xcodebuild \
-            -project "$PROJECT_PATH" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            -derivedDataPath "$RUNNER_TEMP/IPAActionDerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            clean build
+          COMMON_ARGS=(
+            -scheme "$SCHEME"
+            -configuration Release
+            -sdk iphoneos
+            -destination "generic/platform=iOS"
+            -derivedDataPath "$RUNNER_TEMP/DerivedData"
+            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGN_IDENTITY=""
+            DEVELOPMENT_TEAM=""
+          )
+
+          if [ "$PROJECT_TYPE" = "workspace" ]; then
+            xcodebuild \
+              -workspace "$PROJECT_PATH" \
+              "${COMMON_ARGS[@]}" \
+              clean build
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              "${COMMON_ARGS[@]}" \
+              clean build
+          fi
 
       - name: Create IPA
         shell: bash
         run: |
           set -euo pipefail
 
-          PRODUCTS="$RUNNER_TEMP/IPAActionDerivedData/Build/Products/Release-iphoneos"
-
-          APP_PATH="$(find "$PRODUCTS" \
-            -maxdepth 1 \
-            -type d \
-            -name '*.app' \
-            -print -quit)"
+          APP_PATH="$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" \
+            -maxdepth 1 -type d -name '*.app' -print -quit)"
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found"
-            find "$RUNNER_TEMP/IPAActionDerivedData/Build/Products" \
-              -maxdepth 4 -type d -print || true
+            echo "ERROR: built .app not found"
+            find "$RUNNER_TEMP/DerivedData/Build/Products" -maxdepth 4 -type d -print || true
             exit 1
           fi
 
@@ -175,17 +172,17 @@ print("IPAAction" if "IPAAction" in schemes else schemes[0])
           cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
 
           cd "$RUNNER_TEMP"
-          rm -f IPAAction.ipa
-          /usr/bin/zip -qry IPAAction.ipa Payload
+          rm -f BuiltApp.ipa
+          /usr/bin/zip -qry BuiltApp.ipa Payload
 
-          test -s IPAAction.ipa
-          unzip -t IPAAction.ipa >/dev/null
-          ls -lh IPAAction.ipa
+          test -s BuiltApp.ipa
+          unzip -t BuiltApp.ipa >/dev/null
+          ls -lh BuiltApp.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: IPAAction-v2.6-IPA
-          path: ${{ runner.temp }}/IPAAction.ipa
+          name: Built-IPA
+          path: ${{ runner.temp }}/BuiltApp.ipa
           if-no-files-found: error
           retention-days: 14
