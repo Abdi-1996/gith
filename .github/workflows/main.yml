@@ -18,17 +18,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect project
+      - name: Prepare source
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Repository files:"
-          find "$GITHUB_WORKSPACE" -maxdepth 3 -type f | sort | head -300
+          SOURCE_ROOT="$GITHUB_WORKSPACE"
 
-          PROJECT_YML="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -name project.yml -print -quit || true)"
-          WORKSPACE="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type d -name '*.xcworkspace' -print -quit || true)"
-          XCODEPROJ="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type d -name '*.xcodeproj' -print -quit || true)"
+          PROJECT_YML="$(find "$SOURCE_ROOT" -maxdepth 4 -type f -name project.yml -print -quit || true)"
+          WORKSPACE="$(find "$SOURCE_ROOT" -maxdepth 4 -type d -name '*.xcworkspace' -print -quit || true)"
+          XCODEPROJ="$(find "$SOURCE_ROOT" -maxdepth 4 -type d -name '*.xcodeproj' -print -quit || true)"
+
+          if [ -z "$PROJECT_YML" ] && [ -z "$WORKSPACE" ] && [ -z "$XCODEPROJ" ]; then
+            ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -name '*.zip' -print -quit || true)"
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ERROR: No project files and no ZIP archive found"
+              exit 1
+            fi
+
+            echo "Using archive: $ZIP_FILE"
+
+            EXTRACT_DIR="$RUNNER_TEMP/AppSource"
+            rm -rf "$EXTRACT_DIR"
+            mkdir -p "$EXTRACT_DIR"
+
+            unzip -t "$ZIP_FILE" >/dev/null
+            unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+            SOURCE_ROOT="$EXTRACT_DIR"
+
+            PROJECT_YML="$(find "$SOURCE_ROOT" -type f -name project.yml -print -quit || true)"
+            WORKSPACE="$(find "$SOURCE_ROOT" -type d -name '*.xcworkspace' -print -quit || true)"
+            XCODEPROJ="$(find "$SOURCE_ROOT" -type d -name '*.xcodeproj' -print -quit || true)"
+          fi
+
+          echo "Source root: $SOURCE_ROOT"
+          find "$SOURCE_ROOT" -maxdepth 4 -type f | sort | head -300
 
           if [ -n "$PROJECT_YML" ]; then
             echo "PROJECT_TYPE=xcodegen" >> "$GITHUB_ENV"
@@ -48,7 +74,7 @@ jobs:
             echo "Found project: $XCODEPROJ"
 
           else
-            echo "ERROR: No project.yml, .xcworkspace, or .xcodeproj found"
+            echo "ERROR: ZIP extracted, but no project.yml, .xcworkspace, or .xcodeproj was found"
             exit 1
           fi
 
@@ -67,10 +93,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$PROJECT_DIR"
           xcodegen generate
 
           GENERATED="$(find "$PROJECT_DIR" -maxdepth 1 -type d -name '*.xcodeproj' -print -quit)"
+
           if [ -z "$GENERATED" ]; then
             echo "ERROR: xcodegen did not generate .xcodeproj"
             exit 1
@@ -109,9 +137,15 @@ jobs:
           set -euo pipefail
 
           if [ "$PROJECT_TYPE" = "workspace" ]; then
-            xcodebuild               -resolvePackageDependencies               -workspace "$PROJECT_PATH"               -scheme "$SCHEME"
+            xcodebuild \
+              -resolvePackageDependencies \
+              -workspace "$PROJECT_PATH" \
+              -scheme "$SCHEME"
           else
-            xcodebuild               -resolvePackageDependencies               -project "$PROJECT_PATH"               -scheme "$SCHEME"
+            xcodebuild \
+              -resolvePackageDependencies \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME"
           fi
 
       - name: Build unsigned app
@@ -121,9 +155,31 @@ jobs:
           set -o pipefail
 
           if [ "$PROJECT_TYPE" = "workspace" ]; then
-            xcodebuild               -workspace "$PROJECT_PATH"               -scheme "$SCHEME"               -configuration Release               -sdk iphoneos               -destination "generic/platform=iOS"               -derivedDataPath "$RUNNER_TEMP/DerivedData"               CODE_SIGNING_ALLOWED=NO               CODE_SIGNING_REQUIRED=NO               CODE_SIGN_IDENTITY=""               DEVELOPMENT_TEAM=""               clean build
+            xcodebuild \
+              -workspace "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination "generic/platform=iOS" \
+              -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="" \
+              clean build
           else
-            xcodebuild               -project "$PROJECT_PATH"               -scheme "$SCHEME"               -configuration Release               -sdk iphoneos               -destination "generic/platform=iOS"               -derivedDataPath "$RUNNER_TEMP/DerivedData"               CODE_SIGNING_ALLOWED=NO               CODE_SIGNING_REQUIRED=NO               CODE_SIGN_IDENTITY=""               DEVELOPMENT_TEAM=""               clean build
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination "generic/platform=iOS" \
+              -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="" \
+              clean build
           fi
 
       - name: Create IPA
